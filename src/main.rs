@@ -1,6 +1,7 @@
 use async_stream::stream;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use std::convert::Infallible;
+use std::io::Write;
 use warp::{Filter, sse::Event, http};
 use futures_util::{stream::iter, Stream};
 //use parking_lot::{RwLock, RwLockReadGuard,MappedRwLockReadGuard};
@@ -46,7 +47,7 @@ struct Order {
   d: String,
   p: f64,
   v: i64,
-  m: String,
+  m: i64,
 }
 
 impl Order {
@@ -56,7 +57,7 @@ impl Order {
           d: String::new(),
           p: 0.0,
           v: 0,
-          m: String::from("empty"),
+          m: 0,
         }
     }
 }
@@ -113,18 +114,34 @@ fn json_order_body() -> impl Filter<Extract = (Order,), Error = warp::Rejection>
 } 
 
 use warp::reject::Reject;
-use std::error::Error;
-
+use std::fs::OpenOptions;
 
 #[derive(Debug)]
 struct BlockedWriter;
 
 impl Reject for BlockedWriter {}
 
-use warp::{Buf};
+lazy_static! {
+  static ref ORDER_PIPE: Mutex<File> = { 
+    let file_name = "/home/azler/quik/pipes/WindowsPipe/rust_pipe/clientToServer.fifo";
+    println!("File path: {:?}", file_name);
+    let file = OpenOptions::new()
+      .write(true)
+      .append(true)
+      .open(file_name)
+      .unwrap();
+      Mutex::new(file)
+  };
+}
 
 async fn send_order(item: Order)-> Result<impl warp::Reply, warp::Rejection> {
-  println!("recived order: {:?}", item);
+  println!("received order: {:?}", item);
+  {
+    let mut fpipe = ORDER_PIPE.lock().unwrap();
+    let order = serde_json::to_string(&item).unwrap();
+    let _ = fpipe.write_all(order.as_bytes());
+    fpipe.flush();
+  }
   Ok(warp::reply::with_status(
     "send order",
      http::StatusCode::CREATED,
@@ -156,6 +173,7 @@ use warp::body::content_length_limit;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Sender, Receiver};
 use tokio_stream::{self as stream, StreamExt};
+use std::fs::File;
 
 #[tokio::main]
 async fn run_server(fd: RawFd) -> anyhow::Result<()> {
